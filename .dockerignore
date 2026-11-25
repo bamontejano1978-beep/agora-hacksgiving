@@ -1,0 +1,13 @@
+__pycache__
+*.py[cod]
+.venv
+venv
+.env
+datos
+tests
+demo_flujo.py
+*.md
+.git
+.freebuff
+openrouter key.txt
+*.key

@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+datos/
+*.tmp
+.pytest_cache/
+
+# Secretos: NUNCA al repositorio (la submission pide un link al código)
+openrouter key.txt
+*.key
+*.pem
+
+# Entorno local de Freebuff Desktop (marcador de proyecto)
+.freebuff/
