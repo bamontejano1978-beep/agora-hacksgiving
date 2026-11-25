@@ -4,6 +4,11 @@ Es el agente que vive en un Sprite: entiende el pedido en lenguaje natural (con
 el LLM a través del connector, sin credencial dentro de la máquina), convoca
 pujas, adjudica con el matchmaker y **ejecuta el pago solo si el Testigo lo
 autoriza con evidencia**.
+
+Con AGORA_TRABAJADOR_FANTASMA=1 (arco de demo), si el adjudicatario no publica
+el reto TXT el Jefe reasigna al siguiente postor del ranking en la misma
+llamada. Sin el interruptor, la falta de evidencia sigue siendo un PENDIENTE
+reintentable.
 """
 
 import datetime
@@ -11,8 +16,9 @@ import uuid
 
 import requests
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 
-from agora import config, evidencia, llm, puntuacion
+from agora import auditoria, config, evidencia, llm, puntuacion
 from agora.almacen import Almacen
 from agora.modelos import Pedido, PedidoEntrada, Puja
 
@@ -137,6 +143,52 @@ def _guardar_pedido(job_id: str, datos: dict) -> None:
     almacen.actualizar(_guardar)
 
 
+def _intentar(job_id: str, pedido: dict, trabajador_id: str) -> tuple[dict, dict, dict]:
+    """Un intento completo: reto -> entrega -> verificación. No decide nada."""
+    dominio = pedido["dominio"]
+    reto = _post(
+        f"{config.URL_TESTIGO}/reto",
+        {"job_id": job_id, "dominio": dominio},
+        timeout=15,
+    )
+    entrega = _post(
+        f"{config.URL_TRABAJADOR}/comprar",
+        {
+            "job_id": job_id,
+            "dominio": dominio,
+            "trabajador_id": trabajador_id,
+            "nonce": reto.get("nonce"),
+        },
+        timeout=20,
+    )
+    verificacion = _post(
+        f"{config.URL_TESTIGO}/verificar",
+        {
+            "job_id": job_id,
+            "dominio": dominio,
+            "trabajador_id": trabajador_id,
+            "pedido": pedido["pedido"],
+            "entrega": entrega.get("entrega", ""),
+            "nonce": reto.get("nonce"),
+        },
+        timeout=120,
+    )
+    return reto, entrega, verificacion
+
+
+def _siguiente_postor(pedido: dict, intentados: set[str]) -> dict | None:
+    """Siguiente del ranking original que todavía no lo haya intentado."""
+    for puja in pedido.get("ranking") or []:
+        if puja.get("trabajador_id") not in intentados:
+            return puja
+    return None
+
+
+def _fallo_de_entrega(estado: str, verificacion: dict) -> bool:
+    """El postor no demostró nada: el Testigo no encontró el TXT del reto."""
+    return estado == "PENDIENTE" and verificacion.get("modo") == "evidencia"
+
+
 @app.get("/")
 def home():
     return {
@@ -147,6 +199,8 @@ def home():
         "trabajador": config.URL_TRABAJADOR,
         "testigo": config.URL_TESTIGO,
         "modo_demo": config.DEMO,
+        "fantasma": config.TRABAJADOR_FANTASMA,
+        "auditoria": "/auditoria",
     }
 
 
@@ -216,53 +270,89 @@ def crear_pedido(entrada: PedidoEntrada):
 
 @app.post("/pedido/{job_id}/ejecutar")
 def ejecutar(job_id: str):
-    """Reto -> entrega del trabajador -> verificación del Testigo -> pago o no."""
+    """Reto -> entrega -> verificación -> pago, o reasignación al siguiente.
+
+    Con AGORA_TRABAJADOR_FANTASMA=1, si el adjudicatario no demuestra nada el
+    Jefe pasa al siguiente postor del ranking en esta misma llamada. El pedido
+    solo queda RECHAZADO cuando se agotan los candidatos sin evidencia.
+    """
     pedido = _leer_pedido(job_id)
     if pedido["estado"] in ("PAGADO", "RECHAZADO"):
         raise HTTPException(
             status_code=409, detail=f"El pedido ya esta {pedido['estado']}"
         )
-    ganador = pedido.get("ganador") or {}
-    trabajador_id = ganador.get("trabajador_id")
-    if not trabajador_id:
-        raise HTTPException(status_code=409, detail="El pedido no tiene adjudicatario")
 
-    dominio = pedido["dominio"]
-    reto = _post(
-        f"{config.URL_TESTIGO}/reto",
-        {"job_id": job_id, "dominio": dominio},
-        timeout=15,
-    )
-    entrega = _post(
-        f"{config.URL_TRABAJADOR}/comprar",
-        {
-            "job_id": job_id,
-            "dominio": dominio,
-            "trabajador_id": trabajador_id,
-            "nonce": reto.get("nonce"),
-        },
-        timeout=20,
-    )
-    verificacion = _post(
-        f"{config.URL_TESTIGO}/verificar",
-        {
-            "job_id": job_id,
-            "dominio": dominio,
-            "trabajador_id": trabajador_id,
-            "pedido": pedido["pedido"],
-            "entrega": entrega.get("entrega", ""),
-            "nonce": reto.get("nonce"),
-        },
-        timeout=120,
-    )
+    intentos = [dict(i) for i in pedido.get("intentos") or []]
+    reasignaciones = [dict(r) for r in pedido.get("reasignaciones") or []]
+    intentados = {i.get("trabajador_id") for i in intentos if i.get("trabajador_id")}
 
-    estado, siguiente = _estado_y_siguiente(verificacion, job_id, reto)
+    while True:
+        trabajador_id = (pedido.get("ganador") or {}).get("trabajador_id")
+        if not trabajador_id:
+            raise HTTPException(
+                status_code=409, detail="El pedido no tiene adjudicatario"
+            )
+
+        reto, entrega, verificacion = _intentar(job_id, pedido, trabajador_id)
+        estado, siguiente = _estado_y_siguiente(verificacion, job_id, reto)
+
+        intentados.add(trabajador_id)
+        intentos.append(
+            {
+                "trabajador_id": trabajador_id,
+                "resultado": estado,
+                "veredicto": verificacion.get("veredicto"),
+                "modo": verificacion.get("modo"),
+                "liberar_pago": bool(verificacion.get("liberar_pago")),
+                "evidencia_ok": bool(
+                    (verificacion.get("evidencia") or {}).get("reto", {}).get("ok")
+                ),
+                "razon": str(verificacion.get("razon") or "")[:300],
+                "entrega": str(entrega.get("entrega") or "")[:400],
+                # Evidencia completa del veredicto y reto emitido: la página de
+                # auditoría puede reproducir el dig sin consultar al Testigo.
+                "reto": reto,
+                "verificacion": verificacion,
+            }
+        )
+
+        if not (
+            config.TRABAJADOR_FANTASMA and _fallo_de_entrega(estado, verificacion)
+        ):
+            break
+
+        relevo = _siguiente_postor(pedido, intentados)
+        if not relevo:
+            estado = "RECHAZADO"
+            siguiente = (
+                "Ningun postor restante publico la evidencia: se devuelve el "
+                "importe al cliente."
+            )
+            break
+        reasignaciones.append(
+            {
+                "de": trabajador_id,
+                "a": relevo["trabajador_id"],
+                "motivo": "sin evidencia: el reto TXT no se publico",
+            }
+        )
+        pedido = dict(
+            pedido,
+            ganador=relevo,
+            razon=(
+                f"Reasignado a {relevo['trabajador_id']}: {trabajador_id} no "
+                "publico el reto TXT y el pago sigue retenido."
+            ),
+        )
+
     actualizado = dict(pedido)
     actualizado.update(
         estado=estado,
         reto=reto,
         entrega=entrega,
         veredicto=verificacion,
+        intentos=intentos,
+        reasignaciones=reasignaciones,
     )
     _guardar_pedido(job_id, actualizado)
     return {
@@ -272,6 +362,8 @@ def ejecutar(job_id: str):
         "reto": reto,
         "entrega": entrega,
         "verificacion": verificacion,
+        "intentos": intentos,
+        "reasignaciones": reasignaciones,
         "pedido": actualizado,
     }
 
@@ -296,6 +388,32 @@ def listar_pedidos():
             for p in pedidos.values()
         ],
     }
+
+
+def _registro_testigo() -> tuple[dict | None, str | None]:
+    """Libro del Testigo para la página. Si no responde, la página sigue."""
+    try:
+        r = requests.get(f"{config.URL_TESTIGO}/jobs", timeout=3)
+    except requests.RequestException as e:
+        return None, f"No puedo leer el registro del Testigo: {type(e).__name__}"
+    if not r.ok:
+        return None, f"El Testigo respondio {r.status_code}"
+    try:
+        datos = r.json()
+    except ValueError:
+        return None, "El Testigo no devolvio JSON"
+    if not isinstance(datos, dict):
+        return None, "El registro del Testigo no tiene la forma esperada"
+    return datos, None
+
+
+@app.get("/auditoria", response_class=HTMLResponse)
+def auditoria_html():
+    """Libro de pedidos + veredictos + reputación, en una página sin build."""
+    testigo_datos, error = _registro_testigo()
+    return HTMLResponse(
+        auditoria.pagina(almacen.cargar().get("pedidos", {}), testigo_datos, error)
+    )
 
 
 if __name__ == "__main__":

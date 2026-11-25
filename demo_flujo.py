@@ -90,15 +90,22 @@ def main() -> None:
     print(f"\n  GANADOR: {pedido['ganador']['trabajador_id']}")
     print(f"  RAZÓN:   {pedido['razon']}")
 
-    cabecera(3, "El Testigo emite el reto, el trabajador entrega, el Testigo juzga")
+    cabecera(3, "El Testigo emite el reto; cada trabajador enseña su prueba")
     resultado = post(f"/pedido/{pedido['job_id']}/ejecutar", {})
     reto = resultado["reto"]
     print(f'  Reto: publica en TXT  {reto["registro"]}  el valor  {reto["valor"]}')
-    print(f"  Entrega declarada: {resultado['entrega']['entrega']}")
-    ev = resultado["verificacion"]["evidencia"]["reto"]
-    print(f"  Evidencia -> reto verificado: {ev.get('ok')} (fuente: {ev.get('fuente')})")
-    if not ev.get("ok") and ev.get("detalle"):
-        print(f"  Detalle: {ev['detalle']}")
+    for n, intento in enumerate(resultado.get("intentos") or [], 1):
+        print(f"\n  Intento {n}: {intento['trabajador_id']}")
+        print(f"    afirma:  {intento.get('entrega')}")
+        print(
+            f"    TXT verificado: {intento.get('evidencia_ok')}"
+            f"  ->  {intento.get('veredicto')} (modo {intento.get('modo')})"
+        )
+        if not intento.get("evidencia_ok") and intento.get("razon"):
+            print(f"    razon:   {intento['razon']}")
+        for r in resultado.get("reasignaciones") or []:
+            if r["de"] == intento["trabajador_id"]:
+                print(f"\n  REASIGNACION: {r['de']} no entrego evidencia -> {r['a']}")
 
     # Con DNS real el pago queda retenido hasta que el TXT exista. Aquí se puede
     # publicar el registro y reintentar sin salir de la demo.
@@ -141,7 +148,8 @@ def main() -> None:
             "  Sprite) para ver el veredicto SI y la reputación subir."
         )
 
-    print("\nFin del flujo.")
+    print(f"\nAuditoría completa: {URL_JEFE}/auditoria")
+    print("Fin del flujo.")
 
 
 if __name__ == "__main__":

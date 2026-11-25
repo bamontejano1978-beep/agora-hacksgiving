@@ -2,6 +2,11 @@
 
 La reputación no se declara aquí: es propiedad del Testigo. Todos empiezan en 4.5
 y la diferencia la marca el historial verificado.
+
+Con AGORA_TRABAJADOR_FANTASMA=1 entra un cuarto perfil, `trabajador-fantasma`:
+puja barato, gana y asegura haber publicado el reto TXT sin publicarlo. Es el
+mentiroso del arco de demo, para que se vea que el Testigo no se cree al
+trabajador.
 """
 
 import requests
@@ -19,6 +24,17 @@ TRABAJADORES: dict[str, dict] = {
     "trabajador-rapido": {"especialidad": "dominios", "precio": 12.0, "tiempo_min": 10},
     "trabajador-barato": {"especialidad": "dominios", "precio": 9.0, "tiempo_min": 120},
 }
+
+FANTASMA = "trabajador-fantasma"
+FANTASMA_PERFIL = {"especialidad": "dominios", "precio": 7.5, "tiempo_min": 5}
+
+
+def _trabajadores() -> dict[str, dict]:
+    """Perfiles que compiten ahora. El fantasma es opt-in (arco de demo)."""
+    perfiles = dict(TRABAJADORES)
+    if config.TRABAJADOR_FANTASMA:
+        perfiles[FANTASMA] = dict(FANTASMA_PERFIL)
+    return perfiles
 
 
 def _reputaciones() -> dict:
@@ -45,7 +61,8 @@ def home():
     return {
         "agora": "Trabajador v4",
         "rol": "Compite por trabajos con su reputacion real",
-        "trabajadores": list(TRABAJADORES),
+        "trabajadores": list(_trabajadores()),
+        "fantasma": config.TRABAJADOR_FANTASMA,
         "testigo": config.URL_TESTIGO,
     }
 
@@ -64,6 +81,7 @@ def salud():
 def pujar(peticion: PujarRequest):
     if not evidencia.dominio_valido(peticion.dominio):
         raise HTTPException(status_code=422, detail="Dominio no valido")
+    perfiles = _trabajadores()
     reputaciones = _reputaciones()
     pujas = [
         Puja(
@@ -73,7 +91,7 @@ def pujar(peticion: PujarRequest):
             tiempo_min=int(info["tiempo_min"]),
             reputacion=_reputacion(trabajador_id, reputaciones),
         )
-        for trabajador_id, info in TRABAJADORES.items()
+        for trabajador_id, info in perfiles.items()
     ]
     return PujasRespuesta(job_id=peticion.job_id, pujas=pujas)
 
@@ -83,11 +101,12 @@ def comprar(peticion: CompraRequest):
     dominio = evidencia.normalizar(peticion.dominio)
     if not evidencia.dominio_valido(dominio):
         raise HTTPException(status_code=422, detail="Dominio no valido")
-    if peticion.trabajador_id not in TRABAJADORES:
+    if peticion.trabajador_id not in _trabajadores():
         raise HTTPException(status_code=404, detail="Trabajador desconocido")
 
+    miente = peticion.trabajador_id == FANTASMA
     publicado = False
-    if config.DEMO and peticion.nonce:
+    if config.DEMO and peticion.nonce and not miente:
         # En demo, el "registrador" es la zona local del Testigo: el trabajador
         # publica el reto exactamente como lo haría en DNS real.
         try:
@@ -100,11 +119,15 @@ def comprar(peticion: CompraRequest):
         except (requests.RequestException, ValueError):
             publicado = False
 
-    donde = (
-        "y publico el reto TXT en la zona de demo"
-        if publicado
-        else "sin publicar el reto TXT"
-    )
+    if miente:
+        # El fantasma es el mentiroso del arco de demo: la entrega dice que
+        # publicó el TXT y no publica nada. `publicado_en_zona_demo` es la
+        # verdad de máquina; el Testigo solo mira la evidencia.
+        donde = f"y asegura haber publicado el reto TXT en {evidencia.registro_reto(dominio)}"
+    elif publicado:
+        donde = "y publico el reto TXT en la zona de demo"
+    else:
+        donde = "sin publicar el reto TXT"
     return CompraRespuesta(
         job_id=peticion.job_id,
         trabajador_id=peticion.trabajador_id,

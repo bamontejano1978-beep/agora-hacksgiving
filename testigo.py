@@ -210,7 +210,9 @@ def verificar(peticion: VerificacionRequest):
     if decision["modo"] == "llm" and decision["veredicto"] in ("SI", "NO"):
 
         def _persistir(datos: dict) -> dict:
-            datos.setdefault("retos", {}).pop(peticion.job_id, None)  # un reto, un uso
+            # Un reto, un uso. Se guarda el reto emitido con el veredicto para que
+            # la auditoría pueda reproducir el `dig` de esa comprobación.
+            reto_usado = datos.setdefault("retos", {}).pop(peticion.job_id, None)
             datos.setdefault("jobs", []).append(
                 {
                     "fecha": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -221,6 +223,9 @@ def verificar(peticion: VerificacionRequest):
                     "liberar": decision["liberar_pago"],
                     "modo": decision["modo"],
                     "evidencia_ok": bool(ev.get("ok")),
+                    "evidencia": ev,
+                    "reto": reto_usado,
+                    "entrega": peticion.entrega,
                 }
             )
             _aplicar_reputacion(datos, peticion.trabajador_id, decision["liberar_pago"])

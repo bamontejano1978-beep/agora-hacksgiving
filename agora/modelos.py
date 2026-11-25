@@ -100,3 +100,7 @@ class Pedido(BaseModel):
     ganador: Puja | None = None
     razon: str | None = None
     aviso: str | None = None
+    # Traza del arco de demo: qué afirmó y qué demostró cada postor, y a quién
+    # se pasó el pedido cuando la evidencia no apareció.
+    intentos: list[dict] = Field(default_factory=list)
+    reasignaciones: list[dict] = Field(default_factory=list)

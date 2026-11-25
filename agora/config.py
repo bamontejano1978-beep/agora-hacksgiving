@@ -50,6 +50,13 @@ LLM_DESHABILITADO = os.getenv("AGORA_LLM", "").strip().lower() in (
 # 1 = zona DNS de demo local (para probar el flujo sin un dominio real).
 DEMO = _bool("AGORA_DEMO", False)
 
+# 1 = arco de demo de dos actos. En el Trabajador añade `trabajador-fantasma`,
+# que asegura haber publicado el TXT y no lo publica; en el Jefe, cuando falta
+# la evidencia, reasigna al siguiente postor en la misma llamada. Ponlo en los
+# dos servicios: si solo lo activas en el Trabajador, el fantasma gana y el
+# pedido se queda PENDIENTE porque nadie lo reemplaza.
+TRABAJADOR_FANTASMA = _bool("AGORA_TRABAJADOR_FANTASMA", False)
+
 # Persistencia. En Fly con volumen: JOBS_FILE=/data/jobs.json
 JOBS_FILE = os.getenv("JOBS_FILE", os.path.join("datos", "jobs.json"))
 PEDIDOS_FILE = os.getenv("PEDIDOS_FILE", os.path.join("datos", "pedidos.json"))
