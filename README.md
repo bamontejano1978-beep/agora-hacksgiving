@@ -1,4 +1,4 @@
-# AGORA — escrow verificable para agentes que se contratan entre sí
+# AGORA — escrow verificable para agentes
 
 **El problema:** cuando un agente contrata trabajo a otro, ¿quién comprueba que
 está hecho antes de pagar? Confiar en el trabajador es absurdo; confiar en un LLM
@@ -35,11 +35,24 @@ Cliente
 | Reto DNS TXT (prueba de control del dominio) | **Real**: `dnspython` contra DNS, o zona local con `AGORA_DEMO=1`. Es la **única** puerta del pago |
 | Juicio del LLM | **Real** con OpenRouter (`openrouter/free`), y **no puede pagar sin evidencia** |
 | Reputación | **Real**: se persiste y alimenta la siguiente subasta |
+| Mercado abierto de agentes | **No implementado**: subasta cerrada entre perfiles de un solo servicio; la plaza es v2 |
 | Compra del dominio | **Simulada**: no hay registrador integrado, y `/comprar` lo dice en la respuesta |
 | Pago y comisión | **Simulados**: no hay Stripe; el veredicto decide `liberar_pago` |
 
 Que la compra sea simulada es deliberado: lo que se demuestra es el mecanismo de
 confianza (evidencia → veredicto → pago), que es la parte difícil.
+
+## Qué es y qué no es
+
+AGORA es un **escrow verificable**: un agente comprador paga solo cuando un
+árbitro independiente comprueba la entrega. Hoy hay **un solo tipo de encargo**
+(comprar un dominio, con la compra simulada) y **un solo servicio de
+trabajadores** con tres perfiles que pujan entre sí.
+
+No es un marketplace de habilidades: **no hay registro ni descubrimiento de
+agentes externos**, no se puede pedir una habilidad distinta de la compra de un
+dominio y la reputación es global por trabajador, no por habilidad. La plaza de
+agentes es **v2**, no está implementada.
 
 ## Arranque local
 
@@ -97,12 +110,12 @@ AGORA_TRABAJADOR_FANTASMA=1 python trabajador.py
 AGORA_TRABAJADOR_FANTASMA=1 python jefe.py
 ```
 
-entra en la subasta `trabajador-fantasma` (7,50 €, 5 min): puja, gana y en
+entra un cuarto perfil, `trabajador-fantasma` (7,50 €, 5 min): puja, gana y en
 `/comprar` asegura haber publicado el reto TXT sin publicarlo. La evidencia lo
-desmiente, así que el Jefe reasigna el pedido al siguiente mejor postor del
+desmiente, así que el Jefe reasigna el pedido al siguiente perfil del
 ranking en la misma llamada a `/ejecutar`, que es quien publica el TXT y cobra.
 
-La respuesta trae `intentos` (lo que afirmó cada postor, si el TXT se verificó y
+La respuesta trae `intentos` (lo que afirmó cada perfil, si el TXT se verificó y
 su veredicto) y `reasignaciones`, que es la traza que se enseña en la demo:
 
 ```
@@ -114,7 +127,7 @@ Intento 2: trabajador-rapido
   TXT verificado: True  ->  SI (modo llm)
 ```
 
-Sin el interruptor no hay cuarto trabajador ni reasignación: la falta de
+Sin el interruptor no hay cuarto perfil ni reasignación: la falta de
 evidencia sigue siendo un `PENDIENTE` reintentable, como antes. El ranking que
 se recorre es el original, así que la reasignación es reproducible.
 
@@ -319,6 +332,23 @@ pública de OpenRouter, considera el LLM activo sin exigir clave local.
   comprado: la compra sigue siendo simulada.
 - Los pesos del matchmaker son una política de producto, no una verdad: están en
   variables de entorno para poder discutirlos.
+- Es una **subasta cerrada** de un solo tipo de encargo entre perfiles de un
+  único servicio. No hay agentes externos, habilidades fuera del reto DNS ni
+  reputación por habilidad: eso es la plaza, y la plaza es v2.
+
+## v2: marketplace de habilidades (no implementado)
+
+La plaza queda fuera de esta entrega. Para que AGORA sea un marketplace de
+verdad faltan, como mínimo:
+
+- registro y descubrimiento de agentes externos por URL (`POST /agentes`, sonda
+  de capacidades, baja y salud);
+- pedidos con `habilidad` y filtro duro en la adjudicación;
+- una segunda prueba verificable (por ejemplo CNAME), no solo el reto TXT;
+- reputación por `(agente, habilidad)`.
+
+Mientras eso no exista, el relato correcto es **escrow verificable**, no
+marketplace.
 
 ## Checklist de la submission
 
