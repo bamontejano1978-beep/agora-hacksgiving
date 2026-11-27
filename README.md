@@ -32,8 +32,8 @@ Cliente
 | Pieza | Estado |
 |---|---|
 | Pujas, adjudicación y estado de pedidos | **Real**: tres servicios HTTP con estado persistido |
-| Reto DNS TXT (prueba de control del dominio) | **Real**: `dnspython` contra DNS, o zona local con `AGORA_DEMO=1`. Es la **única** puerta del pago |
-| Juicio del LLM | **Real** con OpenRouter (`openrouter/free`), y **no puede pagar sin evidencia** |
+| Reto DNS TXT (prueba de control del dominio) | **Real** con `AGORA_DEMO=0` (DNS público); en la toma con `AGORA_DEMO=1` es una zona local del Testigo (simulación de DNS, no DNS público). Es la **única** puerta del pago |
+| Juicio del LLM | **Real** por el connector de OpenRouter, modelo `recursive/flint-v1.0:free`; el prompt no dicta el SI y **no puede pagar sin evidencia** |
 | Reputación | **Real**: se persiste y alimenta la siguiente subasta |
 | Mercado abierto de agentes | **No implementado**: subasta cerrada entre perfiles de un solo servicio; la plaza es v2 |
 | Compra del dominio | **Simulada**: no hay registrador integrado, y `/comprar` lo dice en la respuesta |
@@ -41,6 +41,8 @@ Cliente
 
 Que la compra sea simulada es deliberado: lo que se demuestra es el mecanismo de
 confianza (evidencia → veredicto → pago), que es la parte difícil.
+
+En la toma se usa `AGORA_DEMO=1`: la compra y el pago son simulados, y la zona DNS es local. Lo real es el escrow (evidencia → veredicto → pago), el connector/modelo, la reputación y el estado. No hay dinero real ni registrador.
 
 ## Qué es y qué no es
 
@@ -53,6 +55,28 @@ No es un marketplace de habilidades: **no hay registro ni descubrimiento de
 agentes externos**, no se puede pedir una habilidad distinta de la compra de un
 dominio y la reputación es global por trabajador, no por habilidad. La plaza de
 agentes es **v2**, no está implementada.
+
+## Toma en el Sprite (Hacksgiving)
+
+La toma se hace contra el Sprite, **no contra localhost**:
+
+- URL: `https://agora-jefe-b3yds.sprites.app`
+- Auditoría: `https://agora-jefe-b3yds.sprites.app/auditoria`
+- La URL pide sesión de Sprite (redirige a `sprites.dev/auth/sprite`); ábrela con tu cuenta.
+- Servicio `agora`: Jefe :8000, Testigo :8002, Trabajador :8001 en loopback.
+- Modelo real: `recursive/flint-v1.0:free` por el connector de OpenRouter; la clave vive en el connector, no en el Sprite. `/salud` y el Testigo muestran `modo_llm: gateway`.
+
+Antes de grabar, desde tu máquina:
+
+```bash
+sprite exec -s agora-jefe -- bash -lc 'cd /app/agora-hacksgiving && ./reiniciar-demo.sh'
+```
+
+El reset conserva `/app/agora-entorno.sh` y los logs; borra solo `pedidos.json`, `jobs.json` y `demo_dns.json`; borra la reputación persistida (los perfiles arrancan en 4.5) y vuelve a levantar los tres servicios.
+
+> **Para la toma NO actual, no ejecutes este reset:** borra la traza `job-ab8fb180`. La traza viva está en el Sprite y el fallback local en `datos/demo-no.*`; el guion de esa toma está en [`GUION.md`](GUION.md). El reset es solo para una toma nueva.
+
+El guion completo, con el orden de planos y las contingencias, está en [`GUION.md`](GUION.md).
 
 ## Arranque local
 
@@ -91,11 +115,15 @@ python demo_flujo.py --texto "quiero toledo-tapas.com por 12 euros"
 Recorre el bucle completo: interpretación del pedido → pujas → adjudicación con
 desglose → reto → entrega → veredicto → reputación.
 
+En local, el comando anterior. En la toma, el flujo se ejecuta dentro del Sprite y la auditoría se abre en la URL del Sprite (ver [Toma en el Sprite](#toma-en-el-sprite-hacksgiving)); no uses localhost en cámara.
+
 Sin modelo configurado verás `veredicto: INDETERMINADO` y `liberar_pago: false`.
-**Eso es correcto**: el modo degradado no mueve dinero. Para el veredicto SI:
+**Eso es correcto**: el modo degradado no mueve dinero. En local puedes usar una clave o el gateway del connector; en el Sprite **no hay clave**: el connector la inyecta y `OPENROUTER_BASE_URL` apunta a su gateway. El modelo real de la toma es `recursive/flint-v1.0:free`.
+
+Para el veredicto SI (solo local):
 
 ```bash
-export OPENROUTER_API_KEY=sk-or-...      # o el gateway del connector (ver abajo)
+export OPENROUTER_API_KEY=sk-or-...      # solo local; en el Sprite, connector
 ```
 
 Ojo con el tier gratis de OpenRouter: 20 peticiones/minuto y 50/día sin crédito.
@@ -113,7 +141,7 @@ AGORA_TRABAJADOR_FANTASMA=1 python jefe.py
 entra un cuarto perfil, `trabajador-fantasma` (7,50 €, 5 min): puja, gana y en
 `/comprar` asegura haber publicado el reto TXT sin publicarlo. La evidencia lo
 desmiente, así que el Jefe reasigna el pedido al siguiente perfil del
-ranking en la misma llamada a `/ejecutar`, que es quien publica el TXT y cobra.
+ranking en la misma llamada a `/ejecutar`, que es quien publica el TXT y cobra si el Testigo lo aprueba.
 
 La respuesta trae `intentos` (lo que afirmó cada perfil, si el TXT se verificó y
 su veredicto) y `reasignaciones`, que es la traza que se enseña en la demo:
@@ -131,6 +159,8 @@ Sin el interruptor no hay cuarto perfil ni reasignación: la falta de
 evidencia sigue siendo un `PENDIENTE` reintentable, como antes. El ranking que
 se recorre es el original, así que la reasignación es reproducible.
 
+> Ese `SI` es un ejemplo del camino que aprueba; **no está dictado**. Con el prompt original y el modelo gratis, el Testigo puede decir `NO` a la compra simulada. No edites el veredicto: si dice `NO`, se muestra el rechazo. Para el camino feliz hay que decidir antes el contrato/DNS real; ver [`GUION.md`](GUION.md).
+
 ## Página de auditoría
 
 `GET /auditoria` en el Jefe sirve una página HTML con el libro de pedidos
@@ -145,7 +175,7 @@ el reto emitido, así que la página incluye el comando que lo reproduce:
 dig +short TXT _agora.toledo-tapas.com
 ```
 
-Ábrela en `http://127.0.0.1:8000/auditoria` (o pídela con `curl`). Si el Testigo
+En la toma: `https://agora-jefe-b3yds.sprites.app/auditoria` (pide sesión de Sprite). En local: `http://127.0.0.1:8000/auditoria` (o pídela con `curl`). Si el Testigo
 no responde, sigue mostrando los pedidos y avisa de que faltan veredictos y
 reputación.
 
@@ -286,6 +316,8 @@ python jefe.py & python testigo.py & python trabajador.py &
 python demo_flujo.py
 ```
 
+El Sprite de la toma no usa este arranque manual: el servicio `agora` ejecuta `agora-arranque.sh`. La configuración está en `/app/agora-entorno.sh` (modo 600), fuera de `datos/` para que el reset no la borre, con `AGORA_MODELO=recursive/flint-v1.0:free`. Para la toma, usa `./reiniciar-demo.sh` y la URL `https://agora-jefe-b3yds.sprites.app`.
+
 `agora/llm.py` detecta el modo gateway: si `OPENROUTER_BASE_URL` no es la URL
 pública de OpenRouter, considera el LLM activo sin exigir clave local.
 
@@ -298,10 +330,10 @@ pública de OpenRouter, considera el LLM activo sin exigir clave local.
 | `URL_TRABAJADOR` / `URL_TESTIGO` | localhost | URLs de los otros servicios |
 | `OPENROUTER_API_KEY` | vacío | clave directa (no en el repo) |
 | `OPENROUTER_BASE_URL` | API pública | gateway de un connector |
-| `AGORA_MODELO` | `openrouter/free` | modelo del juicio |
+| `AGORA_MODELO` | `openrouter/free` | modelo del juicio; en el Sprite de la toma: `recursive/flint-v1.0:free` |
 | `AGORA_LLM` | vacío | `off` desactiva el juicio; si hay clave o gateway, se usa |
-| `AGORA_DEMO` | `0` | zona DNS de demo local |
-| `AGORA_TRABAJADOR_FANTASMA` | `0` | arco de demo: fantasma que miente + reasignación (en Trabajador y Jefe) |
+| `AGORA_DEMO` | `0` | zona DNS de demo local; en la toma del Sprite: `1` |
+| `AGORA_TRABAJADOR_FANTASMA` | `0` | arco de demo: fantasma que miente + reasignación (en Trabajador y Jefe); en el Sprite: `1` |
 | `JOBS_FILE` / `PEDIDOS_FILE` / `DEMO_DNS_FILE` | `datos/...` | persistencia |
 | `AGORA_DNS_SERVIDOR` | sistema | resolver DNS alternativo (`host` o `host:puerto`) |
 | `PESO_REPUTACION` / `PESO_PRECIO` / `PESO_TIEMPO` | 0.55/0.30/0.15 | matchmaker |
@@ -354,10 +386,10 @@ marketplace.
 
 - [x] Agente que corre (Jefe) y flujo end-to-end ejecutable
 - [x] Connector de Sprites soportado por configuración (`OPENROUTER_BASE_URL`)
-- [ ] Crear el Sprite y el connector en el dashboard (necesita tu cuenta)
+- [x] Crear el Sprite y el connector en el dashboard (`agora-jefe`, connector de OpenRouter)
 - [ ] Rotar la clave de OpenRouter y sacarla de la carpeta
 - [x] `git init` y primer commit (sin `datos/`, sin `.env`, sin la clave)
 - [ ] Subir el repo y pegar el enlace en el formulario de Hacksgiving
-- [ ] Vídeo de 60-90 s: pedido → pujas → **PENDIENTE sin TXT** → publicas el TXT (30 s) → mismo pedido → **SI y PAGADO** → reputación 4.5 → 4.6
+- [ ] Vídeo de 60-90 s: pedido → pujas → **NO sin TXT** → el trabajador publica el TXT → el Testigo real decide (**SI/PAGADO si lo aprueba; no dictar el SI**) → reputación. Si el modelo rechaza la compra simulada, muestra el rechazo o fija antes el contrato/DNS real.
 - [ ] Post en X/LinkedIn/Bluesky/Reddit con `@flydotio`
 - [ ] Formulario de Hacksgiving antes del 29 de noviembre, medianoche PST
